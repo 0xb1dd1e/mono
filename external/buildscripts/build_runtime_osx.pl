@@ -11,6 +11,7 @@ my $minimal = 0;
 my $iphone_simulator = 0;
 my $jobs = 4;
 my $xcodePath = '/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform';
+my $unityPath = "$root/../../unity/build";
 
 GetOptions(
    "skipbuild=i"=>\$skipbuild,
@@ -29,13 +30,36 @@ if ($ENV{UNITY_THISISABUILDMACHINE})
 	$jobs = "";
 	$ENV{'PATH'} = "/usr/local/bin:$ENV{'PATH'}";
 } else {
-	print "not rmtree-ing $root/builds, as we're not on a buildmachine";
+	print "not rmtree-ing $root/builds, as we're not on a buildmachine\n";
 	if (($debug==0) && ($skipbuild==0))
 	{
 		print "\n\nARE YOU SURE YOU DONT WANT TO MAKE A DEBUG BUILD?!?!?!!!!!\n\n\n";
 	}
 	$jobs = "-j$jobs";
-	$ENV{'LIBTOOLIZE'} = 'glibtoolize';
+	my $libtoolize = $ENV{'LIBTOOLIZE'};
+	my $libtool = $ENV{'LIBTOOL'};
+	if($teamcity)
+	{
+		$libtoolize = `which glibtoolize`;
+		chomp($libtoolize);
+		if(!-e $libtoolize)
+		{
+			$libtoolize = `which libtoolize`;
+			chomp($libtoolize);
+		}
+	}
+	if(!-e $libtoolize)
+	{
+		$libtoolize = 'libtoolize';
+	}
+	if(!-e $libtool)
+	{
+		$libtool = $libtoolize;
+		$libtool =~ s/ize$//;
+	}
+	print("Libtool: using $libtoolize and $libtool\n");
+	$ENV{'LIBTOOLIZE'} = $libtoolize;
+	$ENV{'LIBTOOL'} = $libtool;
 }
 
 my @arches = ('x86_64','i386');
@@ -51,6 +75,20 @@ for my $arch (@arches)
 	my $sdkversion = '10.6';
 	if ($arch eq 'x86_64') {
 		$macversion = '10.6';
+	}
+
+	my $sdkPath = "$xcodePath/Developer/SDKs/MacOSX$sdkversion.sdk";
+	if ($ENV{'UNITY_THISISABUILDMACHINE'} && !$iphone_simulator)
+	{
+		# Set up clang toolchain
+		$sdkPath = "$unityPath/External/MacBuildEnvironment/builds/MacOSX$sdkversion.sdk";
+		if (! -d $sdkPath)
+		{
+			print("Unzipping mac build toolchain\n");
+			system('unzip', '-qd', "$unityPath/External/MacBuildEnvironment/builds", "$unityPath/External/MacBuildEnvironment/builds.zip");
+		}
+		$ENV{'CC'} = "$sdkPath/../usr/bin/clang";
+		$ENV{'CXX'} = "$sdkPath/../usr/bin/clang++";
 	}
 
 	# Make architecture-specific targets and lipo at the end
@@ -71,10 +109,6 @@ for my $arch (@arches)
 	if (not $skipbuild)
 	{
 		$stackrealign = '-mstackrealign';
-		if ($arch eq 'x86_64')
-		{
-			$stackrealign = '';
-		}
 
 		if ($debug)
 		{
@@ -84,14 +118,13 @@ for my $arch (@arches)
 		}
 		else
 		{
-			# -Os (and -O2 and even -O1) on llvm break/crash the soft debugger
-			# Work around this for now by manually enabling -Os optimizations from the llvm doc
 			# Switch -fomit-frame-pointer to -fno-omit-frame-pointer as omitting frame pointer screws up stack traces
-			my $Os = '-fglobal-alloc-prefer-bytes -fno-omit-frame-pointer -fdefer-pop -fguess-branch-probability -fcprop-registers -fif-conversion -fif-conversion2 -ftree-ccp -ftree-dce -ftree-dominator-opts -ftree-dse -ftree-ter -ftree-lrs -ftree-sra -ftree-copyrename -ftree-fre -ftree-ch -funit-at-a-time -fmerge-constants -fthread-jumps -fcrossjumping -foptimize-sibling-calls -fcse-follow-jumps  -fcse-skip-blocks -fgcse  -fgcse-lm -fexpensive-optimizations -frerun-cse-after-loop -fcaller-saves -fpeephole2 -fschedule-insns  -fschedule-insns2 -fsched-interblock  -fsched-spec -fregmove -fstrict-aliasing -fstrict-overflow -fdelete-null-pointer-checks -freorder-functions -ftree-vrp -ftree-pre';
-			$ENV{CFLAGS} = "-arch $arch -O0 $Os -D_XOPEN_SOURCE=1 -DMONO_DISABLE_SHM=1 -DDISABLE_SHARED_HANDLES=1 $stackrealign";  #optimize for size
+			my $Os = '-Os -fno-omit-frame-pointer';
+			$ENV{CFLAGS} = "-arch $arch -Os -D_XOPEN_SOURCE=1 -DMONO_DISABLE_SHM=1 -DDISABLE_SHARED_HANDLES=1 $stackrealign";  #optimize for size
 			$ENV{CXXFLAGS} = $ENV{CFLAGS};
 			$ENV{LDFLAGS} = "-arch $arch";
 		}
+		my $sdkOptions = "-isysroot $sdkPath -mmacosx-version-min=$macversion";
 
 		if ($iphone_simulator)
 		{
@@ -99,7 +132,7 @@ for my $arch (@arches)
 			$macversion = "10.6";
 			$sdkversion = "10.6";
 		} else {
-			$ENV{'MACSDKOPTIONS'} = "-mmacosx-version-min=$macversion -isysroot $xcodePath/Developer/SDKs/MacOSX$sdkversion.sdk";
+			$ENV{'MACSDKOPTIONS'} = $sdkOptions;
 		}
 		
 		#this will fail on a fresh working copy, so don't die on it.
@@ -157,7 +190,7 @@ for my $arch (@arches)
 
 	if (!$iphone_simulator)
 	{
-		my $cmdline = "gcc -arch $arch -bundle -reexport_library mono/mini/.libs/libmono.a -isysroot $xcodePath/Developer/SDKs/MacOSX$sdkversion.sdk -mmacosx-version-min=$macversion -all_load -liconv -o $libtarget/MonoBundleBinary";
+		my $cmdline = "gcc -arch $arch -bundle -Wl,-reexport_library mono/mini/.libs/libmono.a $sdkOptions -all_load -liconv -o $libtarget/MonoBundleBinary";
 		print "About to call this cmdline to make a bundle:\n$cmdline\n";
 		system($cmdline) eq 0 or die("failed to link libmono.a into mono bundle");
 

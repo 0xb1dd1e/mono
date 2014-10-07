@@ -55,3 +55,9 @@ libeglib_la-*.o
 /mono/tests/tests-config
 /scripts/lc
 /scripts/pdb2mdb
+
+/msvc/Win32_*/obj/
+/msvc/Win32_*/*/*.exp
+/msvc/Win32_*/*/*.bsc
+/msvc/Win32_*/*/*.idb
+pingme.txt
